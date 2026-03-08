@@ -112,3 +112,37 @@ class TestWebContentFetcher(unittest.TestCase):
         finally:
             server.shutdown()
             thread.join()
+
+    def test_fetch_and_parse_pagination(self):
+        html_content = "<html><body><p>" + "A" * 100 + "</p></body></html>"
+
+        class SimpleHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(html_content.encode("utf-8"))
+
+            def log_message(self, format, *args):
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), SimpleHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            fetcher = WebContentFetcher()
+            url = f"http://127.0.0.1:{server.server_address[1]}"
+
+            # Fetch first 50 chars
+            text = asyncio.run(fetcher.fetch_and_parse(url, DummyCtx(), start_index=0, max_length=50))
+            self.assertIn("start_index=50 to see more", text)
+            self.assertIn("of 100 total", text)
+
+            # Fetch from offset 50
+            text = asyncio.run(fetcher.fetch_and_parse(url, DummyCtx(), start_index=50, max_length=50))
+            self.assertNotIn("to see more", text)
+            self.assertIn("of 100 total", text)
+        finally:
+            server.shutdown()
+            thread.join()

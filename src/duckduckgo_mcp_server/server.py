@@ -7,6 +7,7 @@ import urllib.parse
 import sys
 import traceback
 import asyncio
+import argparse
 from datetime import datetime, timedelta
 import time
 import re
@@ -180,7 +181,7 @@ class WebContentFetcher:
     def __init__(self):
         self.rate_limiter = RateLimiter(requests_per_minute=20)
 
-    async def fetch_and_parse(self, url: str, ctx: Context) -> str:
+    async def fetch_and_parse(self, url: str, ctx: Context, start_index: int = 0, max_length: int = 8000) -> str:
         """Fetch and parse content from a webpage"""
         try:
             await self.rate_limiter.acquire()
@@ -216,9 +217,18 @@ class WebContentFetcher:
             # Remove extra whitespace
             text = re.sub(r"\s+", " ", text).strip()
 
-            # Truncate if too long
-            if len(text) > 8000:
-                text = text[:8000] + "... [content truncated]"
+            total_length = len(text)
+
+            # Apply pagination
+            text = text[start_index:start_index + max_length]
+            is_truncated = start_index + max_length < total_length
+
+            # Add metadata
+            metadata = f"\n\n---\n[Content info: Showing characters {start_index}-{start_index + len(text)} of {total_length} total"
+            if is_truncated:
+                metadata += f". Use start_index={start_index + max_length} to see more"
+            metadata += "]"
+            text += metadata
 
             await ctx.info(
                 f"Successfully fetched and parsed content ({len(text)} characters)"
@@ -260,14 +270,13 @@ print(f"  Default Region: {REGION_CODE or 'none'}", file=sys.stderr)
 
 @mcp.tool()
 async def search(query: str, ctx: Context, max_results: int = 10, region: str = "") -> str:
-    """
-    Search DuckDuckGo and return formatted results.
+    """Search the web using DuckDuckGo. Returns a list of results with titles, URLs, and snippets. Use this to find current information, research topics, or locate specific websites. For best results, use specific and descriptive search queries.
 
     Args:
-        query: The search query string
-        max_results: Maximum number of results to return (default: 10)
-        region: Region/language code (optional, leave empty to use default). Examples: 'us-en' (USA), 'cn-zh' (China), 'jp-ja' (Japan), 'wt-wt' (no region)
-        ctx: MCP context for logging
+        query: The search query string. Be specific for better results (e.g., 'Python asyncio tutorial' rather than 'Python').
+        max_results: Maximum number of results to return, between 1 and 20 (default: 10).
+        region: Optional region/language code to localize results. Examples: 'us-en' (USA/English), 'uk-en' (UK/English), 'de-de' (Germany/German), 'fr-fr' (France/French), 'jp-ja' (Japan/Japanese), 'cn-zh' (China/Chinese), 'wt-wt' (no region). Leave empty to use the server default.
+        ctx: MCP context for logging.
     """
     try:
         results = await searcher.search(query, ctx, max_results, region)
@@ -278,19 +287,28 @@ async def search(query: str, ctx: Context, max_results: int = 10, region: str = 
 
 
 @mcp.tool()
-async def fetch_content(url: str, ctx: Context) -> str:
-    """
-    Fetch and parse content from a webpage URL.
+async def fetch_content(url: str, ctx: Context, start_index: int = 0, max_length: int = 8000) -> str:
+    """Fetch and extract the main text content from a webpage. Strips out navigation, headers, footers, scripts, and styles to return clean readable text. Use this after searching to read the full content of a specific result. Supports pagination for long pages via start_index and max_length.
 
     Args:
-        url: The webpage URL to fetch content from
-        ctx: MCP context for logging
+        url: The full URL of the webpage to fetch (must start with http:// or https://).
+        start_index: Character offset to start reading from (default: 0). Use this to paginate through long content.
+        max_length: Maximum number of characters to return (default: 8000). Increase for more content per request or decrease for quicker responses.
+        ctx: MCP context for logging.
     """
-    return await fetcher.fetch_and_parse(url, ctx)
+    return await fetcher.fetch_and_parse(url, ctx, start_index, max_length)
 
 
 def main():
-    mcp.run()
+    parser = argparse.ArgumentParser(description="DuckDuckGo MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="Transport protocol to use (default: stdio)",
+    )
+    args = parser.parse_args()
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":
