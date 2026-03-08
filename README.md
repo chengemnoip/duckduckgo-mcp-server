@@ -87,6 +87,12 @@ Add the following configuration:
 
 3. Restart Claude Desktop
 
+### Running with Claude Code
+
+1. Download [Claude Code](https://github.com/anthropics/claude-code)
+2. Ensure [`uvenv`](https://github.com/robinvandernoord/uvenv) is installed and the `uvx` command is available
+3. Add the MCP server: `claude mcp add ddg-search uvx duckduckgo-mcp-server`
+
 ### Development
 
 For local development, you can use the MCP CLI:
