@@ -1,12 +1,16 @@
 # DuckDuckGo Search MCP Server
 
-[![smithery badge](https://smithery.ai/badge/@nickclyde/duckduckgo-mcp-server)](https://smithery.ai/server/@nickclyde/duckduckgo-mcp-server)
+[![PyPI version](https://img.shields.io/pypi/v/duckduckgo-mcp-server)](https://pypi.org/project/duckduckgo-mcp-server/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/duckduckgo-mcp-server)](https://pypi.org/project/duckduckgo-mcp-server/)
+[![Python versions](https://img.shields.io/pypi/pyversions/duckduckgo-mcp-server)](https://pypi.org/project/duckduckgo-mcp-server/)
 
 A Model Context Protocol (MCP) server that provides web search capabilities through DuckDuckGo, with additional features for content fetching and parsing.
 
-<a href="https://glama.ai/mcp/servers/phcus2gcpn">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/phcus2gcpn/badge" alt="DuckDuckGo Server MCP server" />
-</a>
+## Quick Start
+
+```bash
+uvx duckduckgo-mcp-server
+```
 
 ## Features
 
@@ -18,17 +22,7 @@ A Model Context Protocol (MCP) server that provides web search capabilities thro
 
 ## Installation
 
-### Installing via Smithery
-
-To install DuckDuckGo Search Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@nickclyde/duckduckgo-mcp-server):
-
-```bash
-npx -y @smithery/cli install @nickclyde/duckduckgo-mcp-server --client claude
-```
-
-### Installing via `uv`
-
-Install directly from PyPI using `uv`:
+Install from PyPI using `uv`:
 
 ```bash
 uv pip install duckduckgo-mcp-server
@@ -93,17 +87,44 @@ Add the following configuration:
 2. Ensure [`uvenv`](https://github.com/robinvandernoord/uvenv) is installed and the `uvx` command is available
 3. Add the MCP server: `claude mcp add ddg-search uvx duckduckgo-mcp-server`
 
-### Development
+### Running with SSE or Streamable HTTP
 
-For local development, you can use the MCP CLI:
+The server supports alternative transports for use with other MCP clients:
 
 ```bash
+# SSE transport
+uvx duckduckgo-mcp-server --transport sse
+
+# Streamable HTTP transport
+uvx duckduckgo-mcp-server --transport streamable-http
+```
+
+The default transport is `stdio`, which is used by Claude Desktop and Claude Code.
+
+### Development
+
+For local development:
+
+```bash
+# Install dependencies
+uv sync
+
 # Run with the MCP Inspector
-mcp dev server.py
+mcp dev src/duckduckgo_mcp_server/server.py
 
 # Install locally for testing with Claude Desktop
-mcp install server.py
+mcp install src/duckduckgo_mcp_server/server.py
+
+# Run all tests
+uv run python -m pytest src/duckduckgo_mcp_server/ -v
+
+# Run only unit tests
+uv run python -m pytest src/duckduckgo_mcp_server/test_server.py -v
+
+# Run only e2e tests
+uv run python -m pytest src/duckduckgo_mcp_server/test_e2e.py -v
 ```
+
 ## Available Tools
 
 ### 1. Search Tool
@@ -185,7 +206,6 @@ Cleaned and formatted text content from the webpage.
 
 Issues and pull requests are welcome! Some areas for potential improvement:
 
-- Additional search parameters (region, language, etc.)
 - Enhanced content parsing options
 - Caching layer for frequently accessed content
 - Additional rate limiting strategies

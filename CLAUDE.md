@@ -18,8 +18,14 @@ uv run duckduckgo-mcp-server
 # Run with MCP Inspector (for interactive testing)
 mcp dev src/duckduckgo_mcp_server/server.py
 
-# Run all tests
-uv run python -m pytest src/duckduckgo_mcp_server/test_server.py
+# Run all tests (unit + e2e)
+uv run python -m pytest src/duckduckgo_mcp_server/ -v
+
+# Run only unit tests
+uv run python -m pytest src/duckduckgo_mcp_server/test_server.py -v
+
+# Run only e2e MCP protocol tests
+uv run python -m pytest src/duckduckgo_mcp_server/test_e2e.py -v
 
 # Run a single test
 uv run python -m pytest src/duckduckgo_mcp_server/test_server.py::TestRateLimiter::test_acquire_removes_expired_entries
@@ -44,10 +50,18 @@ Environment variables read at startup (not per-request):
 - `DDG_SAFE_SEARCH`: `STRICT` | `MODERATE` (default) | `OFF`
 - `DDG_REGION`: Region code like `us-en`, `cn-zh`, `jp-ja`, `wt-wt`
 
+## Testing
+
+- **Unit tests** (`test_server.py`): 21 tests using `unittest` style with `unittest.mock.patch` to mock httpx. Covers rate limiter, search parsing, content fetching errors, and configuration.
+- **E2E tests** (`test_e2e.py`): 4 tests using `pytest-asyncio` with MCP SDK's `create_connected_server_and_client_session` from `mcp.shared.memory` for in-memory MCP client/server testing.
+- **CI**: GitHub Actions (`.github/workflows/test.yml`) runs tests on Python 3.10–3.14 using `astral-sh/setup-uv`.
+
 ## Key Dependencies
 
-- `mcp[cli]` (FastMCP framework)
-- `httpx` (async HTTP client)
+- `mcp[cli]>=1.26.0` (FastMCP framework)
+- `httpx>=0.28.1` + `httpcore>=1.0.8` (async HTTP client; httpcore 1.0.8+ required for Python 3.14)
 - `beautifulsoup4` (HTML parsing)
+- Dev: `pytest`, `pytest-asyncio`, `anyio`
 - Build system: `hatchling`
 - Package manager: `uv`
+- Python: `>=3.10`, tested through `3.14`
