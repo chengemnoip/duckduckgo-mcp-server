@@ -101,6 +101,49 @@ uvx duckduckgo-mcp-server --transport streamable-http
 
 The default transport is `stdio`, which is used by Claude Desktop and Claude Code.
 
+### Fetch Backend (bypassing bot detection)
+
+Some sites block the default `httpx` client because of its distinctive TLS fingerprint, regardless of User-Agent — Cloudflare Bot Management and similar filters key on the JA3/TLS handshake, not on headers. An opt-in backend, `curl` (implemented via `curl_cffi`), impersonates a real Chrome browser's TLS handshake and passes through those checks.
+
+**Installation:**
+
+```bash
+# Default install (httpx only)
+uv pip install duckduckgo-mcp-server
+
+# With the optional browser backend
+uv pip install "duckduckgo-mcp-server[browser]"
+```
+
+**Backend options:**
+
+| Value  | Behavior                                                                                  | Needs `[browser]` |
+| ------ | ----------------------------------------------------------------------------------------- | ----------------- |
+| `httpx` | Lightweight async HTTP. Default. Works on most sites.                                     | no                |
+| `curl` | Uses `curl_cffi` with Chrome 131 TLS impersonation. Passes TLS-fingerprint-based filters. | yes               |
+| `auto` | Tries `httpx` first; on 403 or a Cloudflare challenge response, retries with `curl`.      | yes               |
+
+**Two ways to configure the backend:**
+
+1. **Server-wide default** via the `--fetch-backend` CLI flag (applies to every `fetch_content` call):
+
+   ```bash
+   # Default behavior — uses httpx
+   uvx duckduckgo-mcp-server
+
+   # Force curl for every fetch (requires the [browser] extra)
+   uvx --with "duckduckgo-mcp-server[browser]" duckduckgo-mcp-server --fetch-backend curl
+
+   # Try httpx first, fall back to curl on 403 / Cloudflare challenge
+   uvx --with "duckduckgo-mcp-server[browser]" duckduckgo-mcp-server --fetch-backend auto
+   ```
+
+2. **Per-call override** via the `backend` argument on the `fetch_content` tool (overrides the CLI default for that single call). The tool exposes `backend` in its input schema, so an MCP client can choose `"httpx"`, `"curl"`, or `"auto"` on a fetch-by-fetch basis.
+
+The `search` tool always uses `httpx` — DuckDuckGo's search endpoint doesn't require impersonation.
+
+The default stays `httpx` so users who don't need the impersonation don't pay for the extra dependency.
+
 ### Development
 
 For local development:
@@ -158,13 +201,21 @@ Formatted string containing search results with titles, URLs, and snippets.
 ### 2. Content Fetching Tool
 
 ```python
-async def fetch_content(url: str) -> str
+async def fetch_content(
+    url: str,
+    start_index: int = 0,
+    max_length: int = 8000,
+    backend: Optional[str] = None,
+) -> str
 ```
 
 Fetches and parses content from a webpage.
 
 **Parameters:**
 - `url`: The webpage URL to fetch content from
+- `start_index`: Character offset to start reading from (for pagination)
+- `max_length`: Maximum number of characters to return
+- `backend`: Optional per-call override of the default fetch backend (`"httpx"`, `"curl"`, or `"auto"`). When omitted, uses whatever was set via `--fetch-backend` at server startup.
 
 **Returns:**
 Cleaned and formatted text content from the webpage.
