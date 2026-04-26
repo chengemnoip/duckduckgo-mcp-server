@@ -101,6 +101,12 @@ uvx duckduckgo-mcp-server --transport streamable-http
 
 The default transport is `stdio`, which is used by Claude Desktop and Claude Code.
 
+When running with `sse` or `streamable-http`, override the default bind address (`127.0.0.1:8000`) with the `--host` and `--port` flags:
+
+```bash
+uvx duckduckgo-mcp-server --transport streamable-http --host 0.0.0.0 --port 7070
+```
+
 ### Fetch Backend (bypassing bot detection)
 
 Some sites block the default `httpx` client because of its distinctive TLS fingerprint, regardless of User-Agent — Cloudflare Bot Management and similar filters key on the JA3/TLS handshake, not on headers. An opt-in backend, `curl` (implemented via `curl_cffi`), impersonates a real Chrome browser's TLS handshake and passes through those checks.

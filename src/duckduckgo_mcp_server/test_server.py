@@ -549,6 +549,27 @@ class TestMainCliArgs(unittest.TestCase):
             mock_mcp.run.assert_called_once()
         self.assertEqual(duckduckgo_mcp_server.server.fetcher.default_backend, "httpx")
 
+    def test_main_applies_host_and_port_to_settings(self):
+        argv = [
+            "duckduckgo-mcp-server",
+            "--transport", "streamable-http",
+            "--host", "0.0.0.0",
+            "--port", "7070",
+        ]
+        with patch.object(sys, "argv", argv), \
+             patch("duckduckgo_mcp_server.server.mcp") as mock_mcp:
+            duckduckgo_mcp_server.server.main()
+            self.assertEqual(mock_mcp.settings.host, "0.0.0.0")
+            self.assertEqual(mock_mcp.settings.port, 7070)
+            mock_mcp.run.assert_called_once_with(transport="streamable-http")
+
+    def test_main_rejects_host_or_port_with_stdio(self):
+        argv = ["duckduckgo-mcp-server", "--port", "7070"]
+        with patch.object(sys, "argv", argv), \
+             patch("duckduckgo_mcp_server.server.mcp"):
+            with self.assertRaises(SystemExit):
+                duckduckgo_mcp_server.server.main()
+
 
 class TestConfiguration(unittest.TestCase):
     def test_safe_search_enum_values(self):
