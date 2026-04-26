@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import threading
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -14,8 +15,15 @@ from duckduckgo_mcp_server.server import (
     DuckDuckGoSearcher,
     SafeSearchMode,
     SearchResult,
+    SUPPORTED_FETCH_BACKENDS,
     WebContentFetcher,
 )
+
+try:
+    import curl_cffi  # noqa: F401
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
 
 
 class DummyCtx:
@@ -226,6 +234,37 @@ class TestDuckDuckGoSearcherParsing(unittest.TestCase):
         self.assertEqual(results, [])
 
 
+def _serve_html(html_content):
+    """Spin up a throwaway local HTTP server serving html_content. Returns (url, stop_fn)."""
+
+    class SimpleHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(html_content.encode("utf-8"))
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), SimpleHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def stop():
+        server.shutdown()
+        thread.join()
+
+    return url, stop
+
+
+# Backends to exercise in the parameterized fetcher tests. curl is only included
+# when curl_cffi is actually installed (the optional [browser] extra).
+_FETCH_BACKENDS_FOR_TESTING = ["httpx"] + (["curl"] if HAS_CURL_CFFI else [])
+
+
 class TestWebContentFetcher(unittest.TestCase):
     def test_fetch_and_parse_extracts_clean_text(self):
         html_content = """
@@ -245,119 +284,270 @@ class TestWebContentFetcher(unittest.TestCase):
         </html>
         """
 
-        class SimpleHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-type", "text/html")
-                self.end_headers()
-                self.wfile.write(html_content.encode("utf-8"))
-
-            def log_message(self, format, *args):
-                return
-
-        server = HTTPServer(("127.0.0.1", 0), SimpleHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-
+        url, stop = _serve_html(html_content)
         try:
-            fetcher = WebContentFetcher()
-            url = f"http://127.0.0.1:{server.server_address[1]}"
-            text = asyncio.run(fetcher.fetch_and_parse(url, DummyCtx()))
-
-            self.assertIn("Sample Heading", text)
-            self.assertIn("Some meaningful paragraph.", text)
-            self.assertNotIn("Navigation", text)
-            self.assertNotIn("console.log", text)
+            for backend in _FETCH_BACKENDS_FOR_TESTING:
+                with self.subTest(backend=backend):
+                    fetcher = WebContentFetcher(backend=backend)
+                    text = asyncio.run(fetcher.fetch_and_parse(url, DummyCtx()))
+                    self.assertIn("Sample Heading", text)
+                    self.assertIn("Some meaningful paragraph.", text)
+                    self.assertNotIn("Navigation", text)
+                    self.assertNotIn("console.log", text)
         finally:
-            server.shutdown()
-            thread.join()
+            stop()
 
     def test_fetch_and_parse_pagination(self):
         html_content = "<html><body><p>" + "A" * 100 + "</p></body></html>"
-
-        class SimpleHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-type", "text/html")
-                self.end_headers()
-                self.wfile.write(html_content.encode("utf-8"))
-
-            def log_message(self, format, *args):
-                return
-
-        server = HTTPServer(("127.0.0.1", 0), SimpleHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-
+        url, stop = _serve_html(html_content)
         try:
-            fetcher = WebContentFetcher()
-            url = f"http://127.0.0.1:{server.server_address[1]}"
-
-            # Fetch first 50 chars
-            text = asyncio.run(fetcher.fetch_and_parse(url, DummyCtx(), start_index=0, max_length=50))
-            self.assertIn("start_index=50 to see more", text)
-            self.assertIn("of 100 total", text)
-
-            # Fetch from offset 50
-            text = asyncio.run(fetcher.fetch_and_parse(url, DummyCtx(), start_index=50, max_length=50))
-            self.assertNotIn("to see more", text)
-            self.assertIn("of 100 total", text)
+            for backend in _FETCH_BACKENDS_FOR_TESTING:
+                with self.subTest(backend=backend):
+                    fetcher = WebContentFetcher(backend=backend)
+                    # Fetch first 50 chars
+                    text = asyncio.run(
+                        fetcher.fetch_and_parse(url, DummyCtx(), start_index=0, max_length=50)
+                    )
+                    self.assertIn("start_index=50 to see more", text)
+                    self.assertIn("of 100 total", text)
+                    # Fetch from offset 50
+                    text = asyncio.run(
+                        fetcher.fetch_and_parse(url, DummyCtx(), start_index=50, max_length=50)
+                    )
+                    self.assertNotIn("to see more", text)
+                    self.assertIn("of 100 total", text)
         finally:
-            server.shutdown()
-            thread.join()
+            stop()
+
+
+def _patch_backend_client(backend, *, get_return_value=None, get_side_effect=None):
+    """Return a context manager that patches the HTTP client for the given backend.
+
+    - "httpx": patches `httpx.AsyncClient`.
+    - "curl":  patches `curl_cffi.requests.AsyncSession`.
+    Both are patched with an AsyncMock whose .get() uses the provided return/side-effect.
+    """
+    mock_client = AsyncMock()
+    if get_side_effect is not None:
+        mock_client.get = AsyncMock(side_effect=get_side_effect)
+    else:
+        mock_client.get = AsyncMock(return_value=get_return_value)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    if backend == "httpx":
+        return patch("httpx.AsyncClient", return_value=mock_client)
+    elif backend == "curl":
+        return patch("curl_cffi.requests.AsyncSession", return_value=mock_client)
+    raise ValueError(f"no patcher for backend {backend!r}")
 
 
 class TestWebContentFetcherErrors(unittest.TestCase):
     def test_fetch_returns_error_on_timeout(self):
-        fetcher = WebContentFetcher()
-        ctx = DummyCtx()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = asyncio.run(fetcher.fetch_and_parse("https://example.com", ctx))
-        self.assertIn("timed out", result)
+        for backend in _FETCH_BACKENDS_FOR_TESTING:
+            with self.subTest(backend=backend):
+                fetcher = WebContentFetcher(backend=backend)
+                # Use an exception whose type-name triggers the server's curl-path
+                # error handling without needing curl_cffi's exception hierarchy.
+                exc = httpx.TimeoutException("timed out") if backend == "httpx" else TimeoutError("timed out")
+                with _patch_backend_client(backend, get_side_effect=exc):
+                    result = asyncio.run(
+                        fetcher.fetch_and_parse("https://example.com", DummyCtx())
+                    )
+                self.assertTrue(result.startswith("Error"), f"got: {result!r}")
+                self.assertIn("timed out", result.lower())
 
     def test_fetch_returns_error_on_http_error(self):
-        fetcher = WebContentFetcher()
+        for backend in _FETCH_BACKENDS_FOR_TESTING:
+            with self.subTest(backend=backend):
+                fetcher = WebContentFetcher(backend=backend)
+                mock_resp = MagicMock()
+                mock_resp.status_code = 500
+                mock_resp.request = MagicMock()
+                if backend == "httpx":
+                    err = httpx.HTTPStatusError("server error", request=mock_resp.request, response=mock_resp)
+                else:
+                    err = RuntimeError("curl http 500")
+                mock_resp.raise_for_status = MagicMock(side_effect=err)
+                with _patch_backend_client(backend, get_return_value=mock_resp):
+                    result = asyncio.run(
+                        fetcher.fetch_and_parse("https://example.com", DummyCtx())
+                    )
+                self.assertTrue(result.startswith("Error"), f"got: {result!r}")
+
+    def test_fetch_handles_malformed_html(self):
+        for backend in _FETCH_BACKENDS_FOR_TESTING:
+            with self.subTest(backend=backend):
+                fetcher = WebContentFetcher(backend=backend)
+                mock_resp = MagicMock()
+                mock_resp.text = "<<<not valid>>>"
+                mock_resp.status_code = 200
+                mock_resp.raise_for_status = MagicMock()
+                with _patch_backend_client(backend, get_return_value=mock_resp):
+                    result = asyncio.run(
+                        fetcher.fetch_and_parse("https://example.com", DummyCtx())
+                    )
+                # Should not crash - returns some text (possibly empty or with metadata)
+                self.assertIsInstance(result, str)
+
+
+class TestWebContentFetcherBackend(unittest.TestCase):
+    def test_init_rejects_unknown_backend(self):
+        with self.assertRaises(ValueError):
+            WebContentFetcher(backend="bogus")
+
+    def test_default_backend_is_httpx(self):
+        self.assertEqual(WebContentFetcher().default_backend, "httpx")
+
+    def test_supported_backends_tuple(self):
+        self.assertEqual(SUPPORTED_FETCH_BACKENDS, ("httpx", "curl", "auto"))
+
+    def test_per_call_backend_overrides_default(self):
+        """default=httpx, pass backend='curl' per-call → curl path is exercised."""
+        fetcher = WebContentFetcher(backend="httpx")
         ctx = DummyCtx()
+        called = {"httpx": False, "curl": False}
+
+        async def fake_httpx(url):
+            called["httpx"] = True
+            return "<html><body><p>from httpx</p></body></html>"
+
+        async def fake_curl(url):
+            called["curl"] = True
+            return "<html><body><p>from curl</p></body></html>"
+
+        with patch.object(fetcher, "_fetch_httpx", side_effect=fake_httpx), \
+             patch.object(fetcher, "_fetch_curl", side_effect=fake_curl):
+            text = asyncio.run(
+                fetcher.fetch_and_parse("https://example.com", ctx, backend="curl")
+            )
+
+        self.assertFalse(called["httpx"])
+        self.assertTrue(called["curl"])
+        self.assertIn("from curl", text)
+
+    def test_per_call_unknown_backend_returns_error(self):
+        fetcher = WebContentFetcher()
+        result = asyncio.run(
+            fetcher.fetch_and_parse("https://example.com", DummyCtx(), backend="bogus")
+        )
+        self.assertIn("Unknown fetch backend", result)
+
+    def test_curl_backend_missing_dependency_error(self):
+        """If curl_cffi isn't importable, curl backend returns a helpful install hint."""
+        fetcher = WebContentFetcher(backend="curl")
+        # Make the lazy `from curl_cffi.requests import AsyncSession` raise ImportError.
+        with patch.dict(sys.modules, {"curl_cffi": None, "curl_cffi.requests": None}):
+            result = asyncio.run(
+                fetcher.fetch_and_parse("https://example.com", DummyCtx())
+            )
+        self.assertIn("Error", result)
+        self.assertIn("pip install", result)
+        self.assertIn("browser", result)
+
+
+class TestWebContentFetcherAutoFallback(unittest.TestCase):
+    def test_auto_uses_httpx_when_successful(self):
+        fetcher = WebContentFetcher(backend="auto")
+        called = {"httpx": 0, "curl": 0}
+
+        async def fake_httpx(url):
+            called["httpx"] += 1
+            return "<html><body><p>ok from httpx</p></body></html>"
+
+        async def fake_curl(url):
+            called["curl"] += 1
+            return "<html><body><p>from curl</p></body></html>"
+
+        with patch.object(fetcher, "_fetch_httpx", side_effect=fake_httpx), \
+             patch.object(fetcher, "_fetch_curl", side_effect=fake_curl):
+            text = asyncio.run(fetcher.fetch_and_parse("https://example.com", DummyCtx()))
+
+        self.assertEqual(called["httpx"], 1)
+        self.assertEqual(called["curl"], 0)
+        self.assertIn("ok from httpx", text)
+
+    def test_auto_falls_back_on_403(self):
+        fetcher = WebContentFetcher(backend="auto")
+        called = {"curl": 0}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        err = httpx.HTTPStatusError("forbidden", request=MagicMock(), response=mock_resp)
+
+        async def fake_httpx(url):
+            raise err
+
+        async def fake_curl(url):
+            called["curl"] += 1
+            return "<html><body><p>rescued by curl</p></body></html>"
+
+        with patch.object(fetcher, "_fetch_httpx", side_effect=fake_httpx), \
+             patch.object(fetcher, "_fetch_curl", side_effect=fake_curl):
+            text = asyncio.run(fetcher.fetch_and_parse("https://example.com", DummyCtx()))
+
+        self.assertEqual(called["curl"], 1)
+        self.assertIn("rescued by curl", text)
+
+    def test_auto_falls_back_on_cloudflare_challenge(self):
+        fetcher = WebContentFetcher(backend="auto")
+        called = {"curl": 0}
+
+        async def fake_httpx(url):
+            return (
+                "<html><head><title>Just a moment...</title></head>"
+                "<body>Enable JavaScript and cookies to continue</body></html>"
+            )
+
+        async def fake_curl(url):
+            called["curl"] += 1
+            return "<html><body><p>real content</p></body></html>"
+
+        with patch.object(fetcher, "_fetch_httpx", side_effect=fake_httpx), \
+             patch.object(fetcher, "_fetch_curl", side_effect=fake_curl):
+            text = asyncio.run(fetcher.fetch_and_parse("https://example.com", DummyCtx()))
+
+        self.assertEqual(called["curl"], 1)
+        self.assertIn("real content", text)
+
+    def test_auto_reraises_non_403_http_error(self):
+        """A 500 under auto should NOT trigger curl fallback — only 403/CF signals do."""
+        fetcher = WebContentFetcher(backend="auto")
+        called = {"curl": 0}
 
         mock_resp = MagicMock()
         mock_resp.status_code = 500
-        mock_resp.request = MagicMock()
-        error = httpx.HTTPStatusError("server error", request=mock_resp.request, response=mock_resp)
+        err = httpx.HTTPStatusError("server error", request=MagicMock(), response=mock_resp)
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_resp.raise_for_status = MagicMock(side_effect=error)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        async def fake_httpx(url):
+            raise err
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = asyncio.run(fetcher.fetch_and_parse("https://example.com", ctx))
-        self.assertIn("Error", result)
+        async def fake_curl(url):
+            called["curl"] += 1
+            return "<html></html>"
 
-    def test_fetch_handles_malformed_html(self):
-        fetcher = WebContentFetcher()
-        ctx = DummyCtx()
+        with patch.object(fetcher, "_fetch_httpx", side_effect=fake_httpx), \
+             patch.object(fetcher, "_fetch_curl", side_effect=fake_curl):
+            result = asyncio.run(fetcher.fetch_and_parse("https://example.com", DummyCtx()))
 
-        mock_resp = MagicMock()
-        mock_resp.text = "<<<not valid>>>"
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
+        self.assertEqual(called["curl"], 0)
+        self.assertTrue(result.startswith("Error"))
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = asyncio.run(fetcher.fetch_and_parse("https://example.com", ctx))
-        # Should not crash - returns some text (possibly empty or with metadata)
-        self.assertIsInstance(result, str)
+class TestMainCliArgs(unittest.TestCase):
+    def test_main_parses_fetch_backend_flag(self):
+        with patch.object(sys, "argv", ["duckduckgo-mcp-server", "--fetch-backend", "auto"]), \
+             patch("duckduckgo_mcp_server.server.mcp") as mock_mcp:
+            duckduckgo_mcp_server.server.main()
+            mock_mcp.run.assert_called_once()
+        self.assertEqual(duckduckgo_mcp_server.server.fetcher.default_backend, "auto")
+
+    def test_main_defaults_to_httpx(self):
+        with patch.object(sys, "argv", ["duckduckgo-mcp-server"]), \
+             patch("duckduckgo_mcp_server.server.mcp") as mock_mcp:
+            duckduckgo_mcp_server.server.main()
+            mock_mcp.run.assert_called_once()
+        self.assertEqual(duckduckgo_mcp_server.server.fetcher.default_backend, "httpx")
 
 
 class TestConfiguration(unittest.TestCase):

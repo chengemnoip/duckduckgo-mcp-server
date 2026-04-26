@@ -22,6 +22,13 @@ classifiers = [
 Homepage = "https://github.com/nickclyde/duckduckgo-mcp-server"
 Issues = "https://github.com/nickclyde/duckduckgo-mcp-server/issues"
 
+# Optional extras. Install with e.g. `pip install duckduckgo-mcp-server[browser]`.
+[project.optional-dependencies]
+# Enables the `--fetch-backend curl` option (and `auto` fallback), which uses
+# curl_cffi to impersonate a real browser's TLS fingerprint so fetch_content
+# can pass through TLS-fingerprint-based bot filters. Not needed for basic use.
+browser = ["curl_cffi>=0.7.0"]
+
 [project.scripts]
 duckduckgo-mcp-server = "duckduckgo_mcp_server.server:main"
 

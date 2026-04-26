@@ -114,6 +114,28 @@ async def test_search_tool_e2e(ddg_html_factory):
 
 
 @pytest.mark.asyncio
+async def test_fetch_content_tool_accepts_backend_param(local_http_server):
+    """The fetch_content tool should accept a per-call `backend` argument."""
+    html = "<html><body><h1>Backend Param Test</h1></body></html>"
+    url = local_http_server(html)
+
+    async with create_connected_server_and_client_session(mcp_app) as client:
+        result = await client.call_tool("fetch_content", {"url": url, "backend": "httpx"})
+        text = result.content[0].text
+        assert "Backend Param Test" in text
+
+
+@pytest.mark.asyncio
+async def test_fetch_content_tool_lists_backend_in_schema():
+    """The `backend` parameter should be advertised in fetch_content's inputSchema."""
+    async with create_connected_server_and_client_session(mcp_app) as client:
+        tools_result = await client.list_tools()
+        fetch_tool = next(t for t in tools_result.tools if t.name == "fetch_content")
+        props = fetch_tool.inputSchema.get("properties", {})
+        assert "backend" in props, f"expected 'backend' in fetch_content inputSchema, got: {list(props)}"
+
+
+@pytest.mark.asyncio
 async def test_search_tool_handles_errors():
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
